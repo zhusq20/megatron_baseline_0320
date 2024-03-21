@@ -1,4 +1,4 @@
-# megatron_v0.1.0_baseline  
+# megatron_v0.5.0_baseline  
 octave:  
 spack load gcc@13.2.0  
 spack load cuda@12.1.1  
