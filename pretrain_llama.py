@@ -84,20 +84,28 @@ def model_provider(pre_process=True, post_process=True, reward_base_model=False)
     model_config = AutoConfig.from_pretrained(args.model_name_or_path)
     core_config = core_transformer_config_from_hf_config(model_config)
     model_class = LlamaForCausalLM
+    # print("model_config", model_config, "core_config", core_config)
     # else:
     #     model_config = AutoConfig.from_pretrained(args.critic_model_name_or_path)
     #     core_config = core_transformer_config_from_hf_config(model_config)
     #     model_class = LlamaModel
 
+    is_peft = True
+
     model = model_class(
             config=core_config,
             pre_process=pre_process,
             post_process=post_process,
-            parallel_output=False
+            parallel_output=False,
+            is_peft=is_peft,
             )
-    for param in model.parameters():
-       if not 8 in param.shape:
-          param.requires_grad_(False)
+    if is_peft:
+        for name, param in model.named_parameters():
+            if not "lora" in name.lower():
+                param.requires_grad_(False)
+        
+       # if not 8 in param.shape:
+       #    param.requires_grad_(False)
     # model_config = getattr(model, "config", {"model_type": "custom"})
     # print("hahahhah",model_config)
         
@@ -173,6 +181,7 @@ def forward_step(data_iterator, model):
     timers = get_timers()
 
     # Get the batch.
+    # print(f"valley memory {torch.cuda.memory_allocated() / (1024 ** 3)}")
     timers('batch-generator', log_level=2).start()
     tokens, labels, loss_mask, attention_mask, position_ids = get_batch(
         data_iterator)
@@ -180,7 +189,7 @@ def forward_step(data_iterator, model):
     #print(f"before {torch.cuda.memory_allocated()}")
     output_tensor = model(tokens, position_ids, attention_mask,
                                         labels=labels)
-    #print(f"after {torch.cuda.memory_allocated()}")
+    # print(f"peak memory {torch.cuda.memory_allocated() / (1024 ** 3)}")
 
     # Output_tensor stores the standard loss, loos_func calculates the total loss.
     return output_tensor, partial(loss_func, loss_mask)

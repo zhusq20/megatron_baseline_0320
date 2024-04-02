@@ -2,6 +2,9 @@
 
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
+timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
+log_file="logs/log_${timestamp}.txt"
+
 GPUS_PER_NODE=8
 # Change for multinode config
 MASTER_ADDR=localhost
@@ -63,7 +66,7 @@ for i in "${!seq_lens[@]}"; do
                         --decoder-seq-length $seq_len \
                         --max-position-embeddings $seq_len \
                         --lr 0.00015 \
-                        --train-iters 3 \
+                        --train-iters 5 \
                         --lr-decay-iters 320000 \
                         --lr-decay-style cosine \
                         --min-lr 1.0e-5 \
@@ -74,6 +77,7 @@ for i in "${!seq_lens[@]}"; do
                         --untie-embeddings-and-output-weights \
                         --disable-bias-linear \
                         --fp16 \
+			--use-flash-attn \
                     "
                     OUTPUT_ARGS="
                         --log-interval 1 \
@@ -92,7 +96,9 @@ for i in "${!seq_lens[@]}"; do
                     $GPT_ARGS \
                     $DATA_ARGS \
                     $OUTPUT_ARGS \
-                    --distributed-backend nccl
+                    --distributed-backend nccl 
+
+		    echo Current date is $(date) 
                 done
             done
             # echo "[seq_len $seq_len, batch $batch]"

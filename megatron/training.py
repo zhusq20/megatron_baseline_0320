@@ -793,10 +793,11 @@ def training_log(loss_dict, total_loss_dict, learning_rate, iteration,
             total_loss_dict[skipped_iters_key])
         log_string += ' number of nan iterations: {:3d} |'.format(
             total_loss_dict[nan_iters_key])
+        log_string += ' tput: {:.3f} |'.format(batch_size * args.seq_length / elapsed_time_per_iteration)
         total_loss_dict[advanced_iters_key] = 0
         total_loss_dict[skipped_iters_key] = 0
         total_loss_dict[nan_iters_key] = 0
-        print_rank_last(log_string)
+        print_rank_0(log_string)
 
 
 

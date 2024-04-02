@@ -481,7 +481,8 @@ class LlamaParallelAttention(MegatronModule):
                  init_method,
                  output_layer_init_method, layer_number,
                  attention_type=AttnType.self_attn,
-                 attn_mask_type=AttnMaskType.causal):
+                 attn_mask_type=AttnMaskType.causal,
+                 is_peft=False):
         super(LlamaParallelAttention, self).__init__(config=config)
 
         assert attention_type == AttnType.self_attn
@@ -525,8 +526,12 @@ class LlamaParallelAttention(MegatronModule):
                 gather_output=False,
                 init_method=self.init_method, config = self.config)
         # print("projection size", projection_size, config.tensor_model_parallel_size)
-        self.lora_a = torch.nn.Linear(config.hidden_size, 8, bias=False)
-        self.lora_b = torch.nn.Linear(8, 3 * projection_size // config.tensor_model_parallel_size, bias=False)
+        self.is_peft = is_peft
+        if self.is_peft:
+            tp_world_size = parallel_state.get_tensor_model_parallel_world_size()
+            self.lora_a = torch.nn.Linear(config.hidden_size, 8, bias=False)
+            self.lora_b = torch.nn.Linear(8, 3 * projection_size // tp_world_size, bias=False)
+            # print("lora shape", config.tensor_model_parallel_size, config)
 
 
         coeff = None
@@ -641,7 +646,9 @@ class LlamaParallelAttention(MegatronModule):
             # Attention heads [sq, b, h] --> [sq, b, (np * 3 * hn)]
             # print("hidden", hidden_states.shape)
             mixed_x_layer, _ = self.query_key_value(hidden_states)
-            mixed_x_layer += self.lora_b(self.lora_a(hidden_states))
+            if self.is_peft:
+                # print(mixed_x_layer.shape, hidden_states.shape)
+                mixed_x_layer += self.lora_b(self.lora_a(hidden_states))
             # print("after", mixed_x_layer.shape, type(mixed_x_layer))
             # exit()
 
@@ -744,7 +751,8 @@ class LlamaParallelTransformerLayer(MegatronModule):
     def __init__(self, config,
                  init_method, output_layer_init_method,
                  layer_number,
-                 self_attn_mask_type=AttnMaskType.causal):
+                 self_attn_mask_type=AttnMaskType.causal,
+                 is_peft=False):
         # print("LlamaParallelTransformerLayer config", config)
         super(LlamaParallelTransformerLayer, self).__init__(config=config)
         # self.config = config
@@ -760,14 +768,15 @@ class LlamaParallelTransformerLayer(MegatronModule):
         self.input_layernorm = RMSNorm(
             config.hidden_size,
             eps=config.layernorm_epsilon)
-        print("LlamaParallelattemtion config", self.config == None)
+        # print("LlamaParallelattemtion config", self.config == None)
         # Self attention.
         self.attention = LlamaParallelAttention(
             self.config,
             self.init_method,
             self.output_layer_init_method,
             layer_number,
-            attn_mask_type=self_attn_mask_type)
+            attn_mask_type=self_attn_mask_type,
+            is_peft=is_peft)
 
         # Layernorm on the attention output
         self.post_attention_layernorm = RMSNorm(
@@ -808,7 +817,7 @@ class LlamaParallelTransformer(MegatronModule):
     def __init__(self, config,
                  init_method, output_layer_init_method,
                  self_attn_mask_type=AttnMaskType.causal,
-                 pre_process=True, post_process=True):
+                 pre_process=True, post_process=True, is_peft=False):
 
         super(LlamaParallelTransformer, self).__init__(config=config)
         # self.config = config
@@ -822,6 +831,8 @@ class LlamaParallelTransformer(MegatronModule):
         self.input_tensor = None
         self.init_method = init_method
         self.output_layer_init_method = output_layer_init_method
+
+        self.is_peft=is_peft
 
         # Store activation checkpoiting flag.
         self.recompute_granularity = config.recompute_granularity
@@ -837,12 +848,13 @@ class LlamaParallelTransformer(MegatronModule):
 
         # Transformer layers.
         def build_layer(layer_number):
-            print("LlamaParallelTransformerLayer layer number",layer_number)
+            # print("LlamaParallelTransformerLayer layer number",layer_number)
             return LlamaParallelTransformerLayer(
                 self.config,
                 self.init_method,
                 self.output_layer_init_method,
-                layer_number)
+                layer_number,
+                is_peft=is_peft)
 
         if config.virtual_pipeline_model_parallel_size is not None:
             assert config.num_layers % config.virtual_pipeline_model_parallel_size == 0, \
@@ -993,7 +1005,7 @@ def CrossEntropy(output, labels):
 class LlamaModel(MegatronModule):
     """llama Language model."""
 
-    def __init__(self, config, pre_process, post_process, parallel_output=True):
+    def __init__(self, config, pre_process, post_process, parallel_output=True, is_peft=False):
         super(LlamaModel, self).__init__(config=config)
         args = get_args()
         # self.config = config
@@ -1023,6 +1035,7 @@ class LlamaModel(MegatronModule):
             self_attn_mask_type=self.self_attn_mask_type,
             pre_process=self.pre_process,
             post_process=self.post_process,
+            is_peft=is_peft
         )
 
     def set_input_tensor(self, input_tensor):
@@ -1048,7 +1061,7 @@ class LlamaModel(MegatronModule):
 
 class LlamaForCausalLM(MegatronModule):
 
-    def __init__(self, config, pre_process, post_process, parallel_output=True):
+    def __init__(self, config, pre_process, post_process, parallel_output=True, is_peft=False):
         super(LlamaForCausalLM, self).__init__(config=config, share_embeddings_and_output_weights=False)
         args = get_args()
         # self.config = config
@@ -1060,8 +1073,8 @@ class LlamaForCausalLM(MegatronModule):
 
         self.init_method = init_method_normal(config.init_method_std)
         self.padded_vocab_size = args.padded_vocab_size
-        print("LlamaForCausalLM config", self.config == None)
-        self.model = LlamaModel(config, pre_process, post_process, parallel_output=parallel_output)
+        # print("LlamaForCausalLM config", self.config == None)
+        self.model = LlamaModel(config, pre_process, post_process, parallel_output=parallel_output, is_peft=is_peft)
 
         if self.post_process:
             self.lm_head = LlamaLMHead(hidden_size=config.hidden_size,
